@@ -13,7 +13,7 @@ exports.handler = async (event, context) => {
   }
 
   // Hent query parameters
-  const { type, clubid, cid, cwd, count } = event.queryStringParameters || {};
+  const { type, clubid, cid, cwd, count, filter, homeonly } = event.queryStringParameters || {};
   
   // Valider påkrevde parametere
   if (!type || !clubid || !cid || !cwd) {
@@ -36,7 +36,7 @@ exports.handler = async (event, context) => {
     const response = await fetch(url);
     const jsCode = await response.text();
     
-    // Parse JavaScript document.write() til HTML
+    // Parse JavaScript til HTML
     function parseJavaScriptToHtml(jsCode) {
       if (!jsCode.includes('document.write')) {
         return jsCode;
@@ -48,7 +48,6 @@ exports.handler = async (event, context) => {
       
       while ((match = writePattern.exec(jsCode)) !== null) {
         let content = match[1];
-        // Unescale HTML entities og JavaScript escaping
         content = content
           .replace(/\\"/g, '"')
           .replace(/\\'/g, "'")
@@ -119,6 +118,9 @@ exports.handler = async (event, context) => {
           const resultMatch = liContent.match(resultPattern);
           const result = resultMatch ? resultMatch[1] : '';
           
+          // Parse dato til Date objekt for sammenligning
+          const parsedDate = parseNorwegianDate(date);
+          
           matches.push({
             date: date,
             time: time,
@@ -126,7 +128,8 @@ exports.handler = async (event, context) => {
             awayTeam: awayTeam || 'TBD',
             venue: venue || 'TBD',
             tournament: tournament,
-            result: result || undefined
+            result: result || undefined,
+            parsedDate: parsedDate
           });
         }
       }
@@ -134,9 +137,67 @@ exports.handler = async (event, context) => {
       return matches;
     }
     
+    // Parse norsk dato til Date objekt
+    function parseNorwegianDate(dateStr) {
+      try {
+        // Format: "fre. 6.6.25" -> konverter til "2025-06-06"
+        const dateMatch = dateStr.match(/(\d+)\.(\d+)\.(\d+)/);
+        if (dateMatch) {
+          const day = parseInt(dateMatch[1]);
+          const month = parseInt(dateMatch[2]);
+          let year = parseInt(dateMatch[3]);
+          
+          // Anta 20xx hvis år er 2-sifret
+          if (year < 100) {
+            year += 2000;
+          }
+          
+          return new Date(year, month - 1, day);
+        }
+        return new Date();
+      } catch (e) {
+        return new Date();
+      }
+    }
+    
+    // Filtrer kamper basert på parametere
+    function filterMatches(matches, filterType, homeOnly) {
+      let filtered = matches;
+      
+      // Filtrer kun hjemmekamper hvis forespurt
+      if (homeOnly === 'true') {
+        filtered = filtered.filter(match => match.venue === 'Hjemme');
+      }
+      
+      // Filtrer på dato
+      if (filterType) {
+        const today = new Date();
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        
+        if (filterType === 'today') {
+          filtered = filtered.filter(match => {
+            return match.parsedDate && 
+                   match.parsedDate.toDateString() === today.toDateString();
+          });
+        } else if (filterType === 'yesterday') {
+          filtered = filtered.filter(match => {
+            return match.parsedDate && 
+                   match.parsedDate.toDateString() === yesterday.toDateString();
+          });
+        }
+      }
+      
+      // Begrens til 4 kamper
+      return filtered.slice(0, 4);
+    }
+    
     // Konverter og parse
     const html = parseJavaScriptToHtml(jsCode);
-    const matches = parseMatchesFromHtml(html);
+    const allMatches = parseMatchesFromHtml(html);
+    const filteredMatches = filterMatches(allMatches, filter, homeonly);
+    
+    console.log(`Filtrerte ${filteredMatches.length} kamper fra ${allMatches.length} totalt`);
     
     // Return strukturert JSON data
     return {
@@ -150,8 +211,13 @@ exports.handler = async (event, context) => {
         success: true,
         type: type,
         clubId: clubid,
-        matches: matches,
-        totalMatches: matches.length,
+        matches: filteredMatches,
+        totalMatches: filteredMatches.length,
+        totalFound: allMatches.length,
+        filters: {
+          dateFilter: filter,
+          homeOnly: homeonly === 'true'
+        },
         lastUpdated: new Date().toISOString(),
         clubLogo: `http://logo.fotballdata.no/logos/${clubid}.jpg?w=120`
       })
