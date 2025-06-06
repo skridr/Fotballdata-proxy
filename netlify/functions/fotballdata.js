@@ -30,36 +30,115 @@ exports.handler = async (event, context) => {
   }
 
   try {
-    // Test primær endpoint
+    // Hent data fra fotballdata.no
     const url = `http://api.fotballdata.no/js.fd?type=${type}&clubid=${clubid}&cid=${cid}&cwd=${cwd}&format=json${count ? `&count=${count}` : ''}`;
     
-    console.log('Tester URL:', url);
-    
     const response = await fetch(url);
-    const data = await response.text();
+    const jsCode = await response.text();
     
-    console.log('Response status:', response.status);
-    console.log('Response headers:', Object.fromEntries(response.headers.entries()));
-    console.log('Response data (first 500 chars):', data.substring(0, 500));
+    // Parse JavaScript document.write() til HTML
+    function parseJavaScriptToHtml(jsCode) {
+      const writeMatches = jsCode.match(/document\.write\("(.*)"\);/g) || [];
+      let html = '';
+      
+      writeMatches.forEach(match => {
+        const content = match.match(/document\.write\("(.*)"\);/)[1];
+        // Unescale HTML entities
+        const unescaped = content
+          .replace(/\\"/g, '"')
+          .replace(/&#229;/g, 'å')
+          .replace(/&#248;/g, 'ø')
+          .replace(/&#230;/g, 'æ')
+          .replace(/&#197;/g, 'Å')
+          .replace(/&#216;/g, 'Ø')
+          .replace(/&#198;/g, 'Æ');
+        html += unescaped;
+      });
+      
+      return html;
+    }
     
-    // Return raw response for debugging
+    // Parse HTML til strukturert data
+    function parseMatchesFromHtml(html, matchType) {
+      const matches = [];
+      
+      // Regex for å finne kamper (basert på mønsteret vi så)
+      const matchPattern = /<li>(.*?)<\/li>/gs;
+      const matchResults = [...html.matchAll(matchPattern)];
+      
+      matchResults.forEach(match => {
+        const content = match[1];
+        
+        // Parse dato og tid
+        const dateTimeMatch = content.match(/>([^<]+\.\d+\.\d+\.?\d*)<\/a> kl (\d+:\d+)/);
+        const date = dateTimeMatch ? dateTimeMatch[1] : '';
+        const time = dateTimeMatch ? dateTimeMatch[2] : '';
+        
+        // Parse turnering
+        const tournamentMatch = content.match(/turnering[^>]*>([^<]+)</);
+        const tournament = tournamentMatch ? tournamentMatch[1].replace(/&#\d+;/g, match => 
+          ({ '&#229;': 'å', '&#248;': 'ø', '&#230;': 'æ' }[match] || match)
+        ) : '';
+        
+        // Parse lag og sted
+        const teamMatch = content.match(/laget[^>]*>([^<]+)</g);
+        let homeTeam = '', awayTeam = '', venue = '';
+        
+        if (content.includes('hjemme mot')) {
+          const homeMatch = content.match(/laget[^>]*>([^<]+)<\/a>[^<]*hjemme mot/);
+          const awayMatch = content.match(/hjemme mot[^>]*laget[^>]*>([^<]+)</);
+          homeTeam = homeMatch ? homeMatch[1] : '';
+          awayTeam = awayMatch ? awayMatch[1] : '';
+          venue = 'Hjemme';
+        } else if (content.includes('borte mot')) {
+          const awayTeamMatch = content.match(/laget[^>]*>([^<]+)<\/a>[^<]*borte mot/);
+          const homeTeamMatch = content.match(/borte mot[^>]*laget[^>]*>([^<]+)</);
+          awayTeam = awayTeamMatch ? awayTeamMatch[1] : '';
+          homeTeam = homeTeamMatch ? homeTeamMatch[1] : '';
+          venue = 'Borte';
+        }
+        
+        // Parse resultat (for tidligere kamper)
+        const resultMatch = content.match(/(\d+-\d+)/);
+        const result = resultMatch ? resultMatch[1] : '';
+        
+        if (date && (homeTeam || awayTeam)) {
+          matches.push({
+            date: date,
+            time: time,
+            homeTeam: homeTeam,
+            awayTeam: awayTeam,
+            venue: venue,
+            tournament: tournament,
+            result: result || undefined
+          });
+        }
+      });
+      
+      return matches;
+    }
+    
+    // Konverter JavaScript til HTML
+    const html = parseJavaScriptToHtml(jsCode);
+    
+    // Parse kamper fra HTML
+    const matches = parseMatchesFromHtml(html, type);
+    
+    // Return strukturert JSON data
     return {
       statusCode: 200,
       headers: {
         'Access-Control-Allow-Origin': '*',
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=300'
       },
       body: JSON.stringify({
         success: true,
-        url: url,
-        status: response.status,
-        headers: Object.fromEntries(response.headers.entries()),
-        dataType: typeof data,
-        dataLength: data.length,
-        dataPreview: data.substring(0, 1000),
-        isJson: data.trim().startsWith('{') || data.trim().startsWith('['),
-        containsDocumentWrite: data.includes('document.write'),
-        containsHTML: data.includes('<html') || data.includes('<script')
+        type: type,
+        clubId: clubid,
+        matches: matches,
+        totalMatches: matches.length,
+        lastUpdated: new Date().toISOString()
       })
     };
 
@@ -73,8 +152,7 @@ exports.handler = async (event, context) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ 
-        error: 'Feil ved henting av fotballdata: ' + error.message,
-        debug: `type=${type}, clubid=${clubid}, cid=${cid}, cwd=${cwd}`
+        error: 'Feil ved henting av fotballdata: ' + error.message
       })
     };
   }
