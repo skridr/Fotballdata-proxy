@@ -1,176 +1,95 @@
-exports.handler = async (event, context) => {
-  // Håndter CORS preflight
-  if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-      },
-      body: ''
-    };
-  }
-
-  // Hent query parameters
-  const { type, clubid, cid, cwd, count } = event.queryStringParameters || {};
+// Erstatt parseMatchesFromHtml funksjonen med denne forbedrede versjonen:
+function parseMatchesFromHtml(html, matchType) {
+  const matches = [];
   
-  // Valider påkrevde parametere
-  if (!type || !clubid || !cid || !cwd) {
-    return {
-      statusCode: 400,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ 
-        error: 'Mangler påkrevde parametere: type, clubid, cid, cwd' 
-      })
-    };
-  }
-
-  try {
-    // Hent data fra fotballdata.no
-    const url = `http://api.fotballdata.no/js.fd?type=${type}&clubid=${clubid}&cid=${cid}&cwd=${cwd}&format=json${count ? `&count=${count}` : ''}`;
+  // Match hele <li>-elementer
+  const liPattern = /<li>(.*?)<\/li>/gs;
+  let liMatch;
+  
+  while ((liMatch = liPattern.exec(html)) !== null) {
+    const liContent = liMatch[1];
     
-    const response = await fetch(url);
-    const jsCode = await response.text();
+    // Parse dato og tid
+    const dateTimePattern = />([^<]*\d+\.\d+\.\d*)<\/a>\s*kl\s*(\d+:\d+)/;
+    const dateTimeMatch = liContent.match(dateTimePattern);
     
-    // Parse JavaScript document.write() til HTML
-    function parseJavaScriptToHtml(jsCode) {
-      if (!jsCode.includes('document.write')) {
-        return jsCode;
-      }
+    if (dateTimeMatch) {
+      const date = dateTimeMatch[1].trim();
+      const time = dateTimeMatch[2];
       
-      // Robust parsing av document.write statements
-      const writePattern = /document\.write\("([^"]*)"\);/g;
-      let html = '';
-      let match;
+      // Parse turnering
+      const tournamentPattern = /turnering[^>]*>([^<]+)</;
+      const tournamentMatch = liContent.match(tournamentPattern);
+      const tournament = tournamentMatch ? tournamentMatch[1].trim() : '';
       
-      while ((match = writePattern.exec(jsCode)) !== null) {
-        let content = match[1];
-        // Unescale HTML entities og JavaScript escaping
-        content = content
-          .replace(/\\"/g, '"')
-          .replace(/\\'/g, "'")
-          .replace(/&#229;/g, 'å')
-          .replace(/&#248;/g, 'ø')
-          .replace(/&#230;/g, 'æ')
-          .replace(/&#197;/g, 'Å')
-          .replace(/&#216;/g, 'Ø')
-          .replace(/&#198;/g, 'Æ');
-        html += content;
-      }
+      // Forbedret parsing av hjemme/borte og lagnavnene
+      let homeTeam = '', awayTeam = '', venue = '';
       
-      return html;
-    }
-    
-    // Parse kamper fra HTML
-    function parseMatchesFromHtml(html, matchType) {
-      const matches = [];
+      // Mønster: <a>Lagnavn</a> <a>hjemme</a> mot <a>Motstanderlag</a>
+      // eller: <a>Lagnavn</a> <a>borte</a> mot <a>Motstanderlag</a>
       
-      // Match hele <li>-elementer
-      const liPattern = /<li>(.*?)<\/li>/gs;
-      let liMatch;
-      
-      while ((liMatch = liPattern.exec(html)) !== null) {
-        const liContent = liMatch[1];
+      if (liContent.includes('hjemme</a> mot')) {
+        // Hjemmekamp: Finn laget som spiller hjemme
+        const homePattern = /laget[^>]*>([^<]+)<\/a>[^<]*<[^>]*>hjemme<\/a>\s*mot/;
+        const awayPattern = /hjemme<\/a>\s*mot[^>]*laget[^>]*>([^<]+)<\/a>/;
         
-        // Parse dato og tid - mer fleksibel regex
-        const dateTimePattern = />([^<]*\d+\.\d+\.\d*)<\/a>\s*kl\s*(\d+:\d+)/;
-        const dateTimeMatch = liContent.match(dateTimePattern);
+        const homeMatch = liContent.match(homePattern);
+        const awayMatch = liContent.match(awayPattern);
         
-        if (dateTimeMatch) {
-          const date = dateTimeMatch[1].trim();
-          const time = dateTimeMatch[2];
-          
-          // Parse turnering
-          const tournamentPattern = /turnering[^>]*>([^<]+)</;
-          const tournamentMatch = liContent.match(tournamentPattern);
-          const tournament = tournamentMatch ? tournamentMatch[1].trim() : '';
-          
-          // Parse hjemme/borte
-          let homeTeam = '', awayTeam = '', venue = '';
-          
-          if (liContent.includes('hjemme mot')) {
-            const homePattern = /laget[^>]*>([^<]+)<\/a>[^<]*hjemme\s+mot/;
-            const awayPattern = /hjemme\s+mot[^>]*laget[^>]*>([^<]+)</;
-            
-            const homeMatch = liContent.match(homePattern);
-            const awayMatch = liContent.match(awayPattern);
-            
-            homeTeam = homeMatch ? homeMatch[1].trim() : '';
-            awayTeam = awayMatch ? awayMatch[1].trim() : '';
-            venue = 'Hjemme';
-          } else if (liContent.includes('borte mot')) {
-            const awayPattern = /laget[^>]*>([^<]+)<\/a>[^<]*borte\s+mot/;
-            const homePattern = /borte\s+mot[^>]*laget[^>]*>([^<]+)</;
-            
-            const awayMatch = liContent.match(awayPattern);
-            const homeMatch = liContent.match(homePattern);
-            
-            awayTeam = awayMatch ? awayMatch[1].trim() : '';
-            homeTeam = homeMatch ? homeMatch[1].trim() : '';
-            venue = 'Borte';
+        homeTeam = homeMatch ? homeMatch[1].trim() : '';
+        awayTeam = awayMatch ? awayMatch[1].trim() : '';
+        venue = 'Hjemme';
+      } else if (liContent.includes('borte</a> mot')) {
+        // Bortekamp: Finn laget som spiller borte
+        const awayPattern = /laget[^>]*>([^<]+)<\/a>[^<]*<[^>]*>borte<\/a>\s*mot/;
+        const homePattern = /borte<\/a>\s*mot[^>]*laget[^>]*>([^<]+)<\/a>/;
+        
+        const awayMatch = liContent.match(awayPattern);
+        const homeMatch = liContent.match(homePattern);
+        
+        awayTeam = awayMatch ? awayMatch[1].trim() : '';
+        homeTeam = homeMatch ? homeMatch[1].trim() : '';
+        venue = 'Borte';
+      } else {
+        // Fallback: Prøv å finne lagnavnene uten hjemme/borte indikator
+        const teamPatterns = /laget[^>]*>([^<]+)<\/a>/g;
+        const teamMatches = [...liContent.matchAll(teamPatterns)];
+        
+        if (teamMatches.length >= 2) {
+          homeTeam = teamMatches[0][1].trim();
+          awayTeam = teamMatches[1][1].trim();
+          venue = 'TBD';
+        } else if (teamMatches.length === 1) {
+          // Kun ett lag funnet - antagelig Ekholt
+          const foundTeam = teamMatches[0][1].trim();
+          if (foundTeam.toLowerCase().includes('ekholt')) {
+            homeTeam = foundTeam;
+            awayTeam = 'TBD';
+            venue = 'TBD';
+          } else {
+            homeTeam = 'Ekholt';
+            awayTeam = foundTeam;
+            venue = 'TBD';
           }
-          
-          // Parse resultat for tidligere kamper
-          const resultPattern = /(\d+-\d+)/;
-          const resultMatch = liContent.match(resultPattern);
-          const result = resultMatch ? resultMatch[1] : '';
-          
-          matches.push({
-            date: date,
-            time: time,
-            homeTeam: homeTeam,
-            awayTeam: awayTeam,
-            venue: venue,
-            tournament: tournament,
-            result: result || undefined
-          });
         }
       }
       
-      return matches;
+      // Parse resultat for tidligere kamper
+      const resultPattern = /(\d+-\d+)/;
+      const resultMatch = liContent.match(resultPattern);
+      const result = resultMatch ? resultMatch[1] : '';
+      
+      matches.push({
+        date: date,
+        time: time,
+        homeTeam: homeTeam || 'TBD',
+        awayTeam: awayTeam || 'TBD', 
+        venue: venue || 'TBD',
+        tournament: tournament,
+        result: result || undefined
+      });
     }
-    
-    // Konverter JavaScript til HTML
-    const html = parseJavaScriptToHtml(jsCode);
-    
-    // Parse kamper fra HTML
-    const matches = parseMatchesFromHtml(html, type);
-    
-    // Return strukturert JSON data
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=300'
-      },
-      body: JSON.stringify({
-        success: true,
-        type: type,
-        clubId: clubid,
-        matches: matches,
-        totalMatches: matches.length,
-        lastUpdated: new Date().toISOString(),
-        clubLogo: `http://logo.fotballdata.no/logos/${clubid}.jpg?w=120`
-      })
-    };
-
-  } catch (error) {
-    console.error('Feil ved henting av data:', error);
-    
-    return {
-      statusCode: 500,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ 
-        error: 'Feil ved henting av fotballdata: ' + error.message
-      })
-    };
   }
-};
+  
+  return matches;
+}
