@@ -25,6 +25,17 @@ exports.handler = async (event, context) => {
   }
 
   try {
+    // Hent klubbnavn fra separat endepunkt
+    const infoUrl = `http://api.fotballdata.no/js.fd?type=clubinfo&clubid=${clubid}`;
+    const infoRes = await fetch(infoUrl);
+    const infoJs = await infoRes.text();
+
+    let clubName = '';
+    const match = infoJs.match(/document\.write\("([^<"]+)"\)/);
+    if (match) {
+      clubName = match[1].replace(/\\"/g, '"').trim();
+    }
+
     const url = `http://api.fotballdata.no/js.fd?type=${type}&clubid=${clubid}&cid=${cid}&cwd=${cwd}&format=json${count ? `&count=${count}` : ''}`;
     const response = await fetch(url);
     const jsCode = await response.text();
@@ -121,7 +132,7 @@ exports.handler = async (event, context) => {
 
     const html = parseJavaScriptToHtml(jsCode);
     const allMatches = parseMatchesFromHtml(html);
-    const filteredMatches = allMatches; // Filtrering deaktivert
+    const filteredMatches = allMatches;
 
     return {
       statusCode: 200,
@@ -134,6 +145,7 @@ exports.handler = async (event, context) => {
         success: true,
         type,
         clubId: clubid,
+        clubName: clubName,
         matches: filteredMatches,
         totalMatches: filteredMatches.length,
         totalFound: allMatches.length,
