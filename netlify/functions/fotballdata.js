@@ -92,7 +92,7 @@ exports.handler = async (event, context) => {
               venue = 'Borte';
             }
           } else if (teamMatches.length >= 1) {
-            homeTeam = teamMatches[0][1] || 'Ekholt';
+            homeTeam = teamMatches[0][1] || 'TBD';
             awayTeam = teamMatches[1]?.[1] || 'TBD';
             venue = 'TBD';
           }
@@ -145,7 +145,7 @@ exports.handler = async (event, context) => {
         success: true,
         type,
         clubId: clubid,
-        clubName: clubName,
+        clubName,
         matches: filteredMatches,
         totalMatches: filteredMatches.length,
         totalFound: allMatches.length,
