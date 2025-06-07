@@ -20,9 +20,7 @@ exports.handler = async (event, context) => {
         'Access-Control-Allow-Origin': '*',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        error: 'Mangler påkrevde parametere: type, clubid, cid, cwd'
-      })
+      body: JSON.stringify({ error: 'Mangler påkrevde parametere: type, clubid, cid, cwd' })
     };
   }
 
@@ -32,7 +30,7 @@ exports.handler = async (event, context) => {
     const jsCode = await response.text();
 
     function parseJavaScriptToHtml(jsCode) {
-      const writePattern = /document\\.write\\("([^"]*)"\\);/g;
+      const writePattern = /document\.write\("([^"]*)"\);/g;
       let html = '';
       let match;
       while ((match = writePattern.exec(jsCode)) !== null) {
@@ -53,21 +51,21 @@ exports.handler = async (event, context) => {
 
     function parseMatchesFromHtml(html) {
       const matches = [];
-      const liPattern = /<li>(.*?)<\\/li>/gs;
+      const liPattern = /<li>(.*?)<\/li>/gs;
       let liMatch;
 
       while ((liMatch = liPattern.exec(html)) !== null) {
         const liContent = liMatch[1];
-        const dateTimePattern = /<a[^>]*>([^<]*\\d+\\.\\d+\\.\\d*)<\\/a>\\s*kl\\s*(\\d+:\\d+)/;
+        const dateTimePattern = /<a[^>]*>([^<]*\d+\.\d+\.\d*)<\/a>\s*kl\s*(\d+:\d+)/;
         const dateTimeMatch = liContent.match(dateTimePattern);
         if (dateTimeMatch) {
           const date = dateTimeMatch[1].trim();
           const time = dateTimeMatch[2];
-          const tournamentPattern = /<a[^>]*title='Se mer om turneringen[^>]*>([^<]+)<\\/a>/;
+          const tournamentPattern = /<a[^>]*title='Se mer om turneringen[^>]*>([^<]+)<\/a>/;
           const tournamentMatch = liContent.match(tournamentPattern);
           const tournament = tournamentMatch ? tournamentMatch[1].trim() : '';
           let homeTeam = '', awayTeam = '', venue = '';
-          const teamLinkPattern = /<a[^>]*title='Se mer om laget[^>]*>([^<]+)<\\/a>/g;
+          const teamLinkPattern = /<a[^>]*title='Se mer om laget[^>]*>([^<]+)<\/a>/g;
           const teamMatches = [...liContent.matchAll(teamLinkPattern)];
 
           if (liContent.includes('>hjemme</a> mot')) {
@@ -88,7 +86,7 @@ exports.handler = async (event, context) => {
             venue = 'TBD';
           }
 
-          const resultPattern = /(\\d+-\\d+)/;
+          const resultPattern = /(\d+-\d+)/;
           const resultMatch = liContent.match(resultPattern);
           const result = resultMatch ? resultMatch[1] : '';
 
@@ -110,7 +108,7 @@ exports.handler = async (event, context) => {
     }
 
     function parseNorwegianDate(dateStr) {
-      const dateMatch = dateStr.match(/(\\d+)\\.(\\d+)\\.(\\d+)/);
+      const dateMatch = dateStr.match(/(\d+)\.(\d+)\.(\d+)/);
       if (dateMatch) {
         const day = parseInt(dateMatch[1]);
         const month = parseInt(dateMatch[2]);
@@ -123,7 +121,7 @@ exports.handler = async (event, context) => {
 
     const html = parseJavaScriptToHtml(jsCode);
     const allMatches = parseMatchesFromHtml(html);
-    const filteredMatches = allMatches; // ← midlertidig uten filter
+    const filteredMatches = allMatches; // Filtrering deaktivert
 
     return {
       statusCode: 200,
@@ -141,7 +139,7 @@ exports.handler = async (event, context) => {
         totalFound: allMatches.length,
         filters: {},
         lastUpdated: new Date().toISOString(),
-        clubLogo: `https://logo.fotballdata.no/logos/${clubid}.jpg?w=120` // HTTPS
+        clubLogo: `https://logo.fotballdata.no/logos/${clubid}.jpg?w=120`
       })
     };
 
@@ -152,9 +150,7 @@ exports.handler = async (event, context) => {
         'Access-Control-Allow-Origin': '*',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        error: 'Feil ved henting av fotballdata: ' + error.message
-      })
+      body: JSON.stringify({ error: 'Feil ved henting av fotballdata: ' + error.message })
     };
   }
 };
