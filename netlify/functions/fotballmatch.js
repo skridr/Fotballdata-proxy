@@ -19,7 +19,7 @@ exports.handler = async (event, context) => {
   }
 
   try {
-    const { action = 'live', clubId = '2020130' } = event.queryStringParameters || {};
+    const { action = 'live', clubId = '64' } = event.queryStringParameters || {};
     
     switch (action) {
       case 'live':
@@ -222,26 +222,28 @@ function extractReferees(match) {
 async function processMatchData(match, isLive) {
   try {
     const processed = {
-      id: match.fiksId || match.id,
+      id: match.fiksId || match.id || match.matchId,
       homeTeam: {
-        name: match.homeTeam?.name || match.hjemmelag?.navn,
+        name: match.homeTeam?.name || match.hjemmelag?.navn || match.homeTeamName,
         logo: match.homeTeam?.logo || match.hjemmelag?.logo,
-        score: match.homeTeam?.score || match.hjemmelag?.maal || 0
+        score: match.homeTeam?.score || match.hjemmelag?.maal || match.homeScore || 0
       },
       awayTeam: {
-        name: match.awayTeam?.name || match.bortelag?.navn,
+        name: match.awayTeam?.name || match.bortelag?.navn || match.awayTeamName,
         logo: match.awayTeam?.logo || match.bortelag?.logo,
-        score: match.awayTeam?.score || match.bortelag?.maal || 0
+        score: match.awayTeam?.score || match.bortelag?.maal || match.awayScore || 0
       },
-      status: match.status || match.kampstatus,
-      startTime: match.startTime || match.starttid,
-      venue: match.venue?.name || match.bane?.navn,
-      tournament: match.tournament?.name || match.turnering?.navn,
-      events: await processEvents(match.events || []),
+      status: match.status || match.kampstatus || match.matchStatus,
+      startTime: match.startTime || match.starttid || match.kickoff || match.date,
+      venue: match.venue?.name || match.bane?.navn || match.venue,
+      tournament: {
+        name: match.tournament?.name || match.turnering?.navn || match.tournament
+      },
+      events: await processEvents(match.events || match.hendelser || []),
       isLive: isLive,
       // Additional fields for better data handling
-      currentTime: match.currentTime || match.spilletid,
-      period: match.period || match.periode,
+      currentTime: match.currentTime || match.spilletid || match.minute,
+      period: match.period || match.periode || match.half,
       referees: extractReferees(match)
     };
     
@@ -259,41 +261,41 @@ async function processEvents(events) {
   return events.map(event => {
     const processed = {
       id: event.id || `event_${Date.now()}_${Math.random()}`,
-      type: mapEventType(event.type || event.hendelsestype),
-      time: event.time || event.tid || event.minutt,
+      type: mapEventType(event.type || event.hendelsestype || event.eventType),
+      time: event.time || event.tid || event.minutt || event.minute,
       team: event.team || event.lag,
       description: event.description || event.beskrivelse
     };
     
-    // Handle player information with jersey numbers
+    // Handle player information with jersey numbers (draktnummer)
     if (event.player || event.spiller) {
       const player = event.player || event.spiller;
       processed.player = {
-        name: player.name || player.navn,
-        number: player.number || player.draktnummer || event.number || event.draktnummer
+        name: player.name || player.navn || player.fullName,
+        number: player.draktnummer || player.number || event.draktnummer || event.number
       };
     }
     
-    // Handle substitutions with both players
-    if (event.playerIn || event.spillerInn) {
-      const playerIn = event.playerIn || event.spillerInn;
+    // Handle substitutions with both players and their draktnummer
+    if (event.playerIn || event.spillerInn || event.substitute) {
+      const playerIn = event.playerIn || event.spillerInn || event.substitute;
       processed.playerIn = {
-        name: playerIn.name || playerIn.navn,
-        number: playerIn.number || playerIn.draktnummer
+        name: playerIn.name || playerIn.navn || playerIn.fullName,
+        number: playerIn.draktnummer || playerIn.number
       };
     }
     
-    if (event.playerOut || event.spillerUt) {
-      const playerOut = event.playerOut || event.spillerUt;
+    if (event.playerOut || event.spillerUt || event.substituted) {
+      const playerOut = event.playerOut || event.spillerUt || event.substituted;
       processed.playerOut = {
-        name: playerOut.name || playerOut.navn,
-        number: playerOut.number || playerOut.draktnummer
+        name: playerOut.name || playerOut.navn || playerOut.fullName,
+        number: playerOut.draktnummer || playerOut.number
       };
     }
     
     // Handle additional event data
-    if (event.additionalInfo) {
-      processed.additionalInfo = event.additionalInfo;
+    if (event.additionalInfo || event.tilleggsinfo) {
+      processed.additionalInfo = event.additionalInfo || event.tilleggsinfo;
     }
     
     return processed;
@@ -302,22 +304,32 @@ async function processEvents(events) {
 
 function mapEventType(apiType) {
   const typeMap = {
+    // Standard engelsk/norsk mapping
     'goal': 'goal',
     'maal': 'goal',
+    'scoring': 'goal',
     'yellow_card': 'yellow',
     'gult_kort': 'yellow',
+    'yellow': 'yellow',
     'red_card': 'red',
-    'rodt_kort': 'red',
+    'rodt_kort': 'red', 
+    'red': 'red',
     'substitution': 'substitution',
     'innbytte': 'substitution',
+    'sub': 'substitution',
     'corner': 'corner',
     'hjornespark': 'corner',
     'free_kick': 'free_kick',
     'frispark': 'free_kick',
     'penalty': 'penalty',
     'straffespark': 'penalty',
+    'penalty_goal': 'penalty',
     'offside': 'offside',
-    'offside': 'offside'
+    'offside': 'offside',
+    'own_goal': 'own-goal',
+    'selvmaal': 'own-goal',
+    'booking': 'yellow',
+    'sending_off': 'red'
   };
   
   return typeMap[apiType?.toLowerCase()] || apiType || 'unknown';
