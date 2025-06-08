@@ -1,8 +1,7 @@
-// Netlify Function: .netlify/functions/fotballmatch.js
-// Spesialisert for å hente kampdata via FiksID
+const fetch = require('node-fetch');
 
 exports.handler = async (event, context) => {
-  // CORS headers
+  // CORS headers for all responses
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -10,506 +9,316 @@ exports.handler = async (event, context) => {
     'Content-Type': 'application/json'
   };
 
-  // Handle preflight
+  // Handle CORS preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers, body: '' };
+    return {
+      statusCode: 200,
+      headers,
+      body: ''
+    };
   }
 
   try {
-    const { fiksid, action = 'match' } = event.queryStringParameters || {};
-
-    if (!fiksid) {
-      return {
-        statusCode: 400,
-        headers,
-        body: JSON.stringify({ 
-          error: 'fiksid parameter is required',
-          usage: '?fiksid=8698452&action=match'
-        })
-      };
-    }
-
-    console.log(`FotballMatch request: fiksid=${fiksid}, action=${action}`);
-
+    const { action = 'live', clubId = '2020130' } = event.queryStringParameters || {};
+    
     switch (action) {
-      case 'match':
-        return await handleMatchData(fiksid, headers);
-      
-      case 'events':
-        return await handleMatchEvents(fiksid, headers);
-      
       case 'live':
-        return await handleLiveMatch(fiksid, headers);
-      
+        return await getLiveMatch(clubId, headers);
+      case 'next':
+        return await getNextMatch(clubId, headers);
+      case 'referees':
+        return await getReferees(clubId, headers);
       default:
-        return await handleMatchData(fiksid, headers);
+        return {
+          statusCode: 400,
+          headers,
+          body: JSON.stringify({ error: 'Invalid action parameter' })
+        };
     }
-
   } catch (error) {
-    console.error('FotballMatch function error:', error);
+    console.error('Function error:', error);
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ 
-        error: 'Internal server error',
-        message: error.message,
-        fiksid: event.queryStringParameters?.fiksid
-      })
+      body: JSON.stringify({ error: 'Internal server error', details: error.message })
     };
   }
 };
 
-// Hovedfunksjon for å hente kampdata
-async function handleMatchData(fiksId, headers) {
+async function getLiveMatch(clubId, headers) {
   try {
-    console.log(`Fetching match data for FiksID: ${fiksId}`);
+    // First try to get live match
+    const liveUrl = `https://www.fotball.no/api/fiks/tournamentMatches/live/${clubId}`;
+    const liveResponse = await fetch(liveUrl);
     
-    // MIDLERTIDIG FIX: Bruk mock data direkte for 8698452
-    if (fiksId === "8698452") {
-      console.log("Using mock data for FiksID 8698452 (scraping bypass)");
-      const mockData = getMockMatchData(fiksId);
-      mockData.source = "mock-bypass";
+    if (liveResponse.ok) {
+      const liveData = await liveResponse.json();
+      
+      if (liveData && liveData.length > 0) {
+        const match = liveData[0];
+        const processedMatch = await processMatchData(match, true);
+        
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            isLive: true,
+            match: processedMatch
+          })
+        };
+      }
+    }
+
+    // If no live match, get next match
+    return await getNextMatch(clubId, headers);
+    
+  } catch (error) {
+    console.error('Error fetching live match:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: 'Failed to fetch live match' })
+    };
+  }
+}
+
+async function getNextMatch(clubId, headers) {
+  try {
+    const nextUrl = `https://www.fotball.no/api/fiks/tournaments/clubnext/${clubId}`;
+    const response = await fetch(nextUrl);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data && data.length > 0) {
+      const match = data[0];
+      const processedMatch = await processMatchData(match, false);
       
       return {
         statusCode: 200,
         headers,
         body: JSON.stringify({
-          success: true,
-          match: mockData,
-          source: "mock-bypass",
-          fiksId: fiksId,
-          timestamp: new Date().toISOString(),
-          note: "Using mock data - scraping failed"
+          isLive: false,
+          isUpcoming: true,
+          match: processedMatch
+        })
+      };
+    } else {
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          isLive: false,
+          isUpcoming: false,
+          message: 'Ingen kommende kamper funnet'
         })
       };
     }
     
-    // Prøv forskjellige metoder for å hente kampdata
-    let matchData = await fetchFromFotballNoAPI(fiksId);
-    
-    if (!matchData) {
-      matchData = await fetchFromFotballNoScraping(fiksId);
-    }
-    
-    if (!matchData) {
-      matchData = getMockMatchData(fiksId);
-    }
-
+  } catch (error) {
+    console.error('Error fetching next match:', error);
     return {
-      statusCode: 200,
+      statusCode: 500,
       headers,
-      body: JSON.stringify({
-        success: true,
-        match: matchData,
-        source: matchData.source || 'unknown',
-        fiksId: fiksId,
-        timestamp: new Date().toISOString()
-      })
-    };
-
-  } catch (error) {
-    console.error(`Error fetching match ${fiksId}:`, error);
-    
-    // Fallback til mock data
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
-        success: true,
-        match: getMockMatchData(fiksId),
-        source: 'mock-error',
-        error: error.message,
-        fiksId: fiksId
-      })
+      body: JSON.stringify({ error: 'Failed to fetch next match' })
     };
   }
 }
 
-// Prøv å hente fra fotball.no API
-async function fetchFromFotballNoAPI(fiksId) {
-  const possibleUrls = [
-    `https://www.fotball.no/api/match/${fiksId}`,
-    `https://api.fotball.no/matches/${fiksId}`,
-    `https://www.fotball.no/fotballdata/kamp/api/?fiksId=${fiksId}`,
-    `https://fiks.fotball.no/api/public/match/${fiksId}`,
-    `https://www.fotball.no/ajax/match/${fiksId}`
-  ];
-
-  for (const url of possibleUrls) {
-    try {
-      console.log(`Trying API URL: ${url}`);
+async function getReferees(clubId, headers) {
+  try {
+    // Try to get current live match first to get referees
+    const liveUrl = `https://www.fotball.no/api/fiks/tournamentMatches/live/${clubId}`;
+    const liveResponse = await fetch(liveUrl);
+    
+    if (liveResponse.ok) {
+      const liveData = await liveResponse.json();
       
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'CloudCast-Scoreboard/1.0',
-          'Accept': 'application/json, text/plain, */*',
-          'Referer': 'https://www.fotball.no/',
-          'Accept-Language': 'no,en;q=0.9'
-        },
-        timeout: 5000
-      });
-
-      if (response.ok) {
-        const contentType = response.headers.get('content-type');
+      if (liveData && liveData.length > 0) {
+        const match = liveData[0];
         
-        if (contentType && contentType.includes('application/json')) {
-          const data = await response.json();
-          console.log(`Success from API: ${url}`);
-          const parsed = parseMatchDataFromAPI(data, fiksId);
-          if (parsed) {
-            parsed.source = 'fotball.no-api';
-            return parsed;
-          }
-        }
-      }
-    } catch (e) {
-      console.log(`Failed API ${url}:`, e.message);
-      continue;
-    }
-  }
-
-  return null;
-}
-
-// Parse API response
-function parseMatchDataFromAPI(data, fiksId) {
-  try {
-    const match = data.match || data.data || data;
-    
-    if (!match) return null;
-
-    const homeTeam = extractTeamName(match.homeTeam || match.home || match.hjemmelag);
-    const awayTeam = extractTeamName(match.awayTeam || match.away || match.bortelag);
-    
-    if (!homeTeam || !awayTeam) return null;
-
-    const tournament = match.tournament?.name || match.serie || match.turnering || "Ukjent turnering";
-    const events = parseEvents(match.events || match.hendelser || []);
-    
-    const score = {
-      home: parseInt(match.homeScore || match.hjemmemaal || 0),
-      away: parseInt(match.awayScore || match.bortemaal || 0)
-    };
-
-    const halfTimeScore = calculateHalfTimeScore(events);
-
-    return {
-      fiksId: fiksId,
-      homeTeam: homeTeam,
-      awayTeam: awayTeam,
-      tournament: tournament,
-      date: match.date || match.dato || new Date().toISOString(),
-      status: match.status || match.kampstatus || "unknown",
-      score: score,
-      halfTimeScore: halfTimeScore,
-      events: events,
-      venue: "Hjemme",
-      time: parseInt(match.currentTime || match.spilletid || 0),
-      source: 'fotball.no-api'
-    };
-
-  } catch (error) {
-    console.error('Error parsing API data:', error);
-    return null;
-  }
-}
-
-// Calculate half-time score from events
-function calculateHalfTimeScore(events) {
-  if (!events || events.length === 0) {
-    return { home: 0, away: 0 };
-  }
-  
-  const firstHalfEvents = events.filter(e => 
-    ['goal', 'penalty', 'own-goal'].includes(e.type) && e.time <= 45
-  );
-  
-  let homeHalfScore = 0;
-  let awayHalfScore = 0;
-  
-  firstHalfEvents.forEach(event => {
-    if ((event.type === 'goal' || event.type === 'penalty') && event.team === 'home') {
-      homeHalfScore++;
-    } else if ((event.type === 'goal' || event.type === 'penalty') && event.team === 'away') {
-      awayHalfScore++;
-    } else if (event.type === 'own-goal' && event.team === 'home') {
-      awayHalfScore++;
-    } else if (event.type === 'own-goal' && event.team === 'away') {
-      homeHalfScore++;
-    }
-  });
-  
-  return { home: homeHalfScore, away: awayHalfScore };
-}
-
-// Ekstraher lag-navn fra forskjellige strukturer
-function extractTeamName(teamObj) {
-  if (!teamObj) return null;
-  if (typeof teamObj === 'string') return teamObj;
-  return teamObj.name || teamObj.navn || teamObj.lagNavn || null;
-}
-
-// Scraping fallback
-async function fetchFromFotballNoScraping(fiksId) {
-  try {
-    const url = `https://www.fotball.no/fotballdata/kamp/?fiksId=${fiksId}`;
-    console.log(`Trying scraping: ${url}`);
-    
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      },
-      timeout: 8000
-    });
-
-    if (!response.ok) {
-      console.log(`Scraping failed: ${response.status}`);
-      return null;
-    }
-    
-    const html = await response.text();
-    console.log(`Scraping response length: ${html.length}`);
-    
-    let matchData = parseMatchFromHTML(html, fiksId);
-    
-    if (!matchData) {
-      matchData = parseMatchFromMetaTags(html, fiksId);
-    }
-    
-    if (!matchData) {
-      matchData = parseMatchFromTitle(html, fiksId);
-    }
-
-    if (matchData) {
-      matchData.source = 'fotball.no-scraping';
-      console.log(`Scraping success: ${matchData.homeTeam} vs ${matchData.awayTeam}`);
-    }
-
-    return matchData;
-
-  } catch (error) {
-    console.error('Scraping error:', error);
-    return null;
-  }
-}
-
-// Parse match fra HTML
-function parseMatchFromHTML(html, fiksId) {
-  try {
-    let cleanHtml = html
-      .replace(/<script[^>]*>.*?<\/script>/gsi, '')
-      .replace(/<style[^>]*>.*?<\/style>/gsi, '')
-      .replace(/<!--.*?-->/gs, '');
-
-    const patterns = [
-      /<h1[^>]*class="[^"]*"[^>]*>([^<]+)\s*[-–]\s*([^<]+)<\/h1>/i,
-      /<title[^>]*>([^-]+)\s*[-–]\s*([^-]+)\s*[-–]/i,
-      /<[^>]*class="[^"]*team[^"]*home[^"]*"[^>]*>([^<]+)<\/[^>]*>.*?<[^>]*class="[^"]*team[^"]*away[^"]*"[^>]*>([^<]+)<\/[^>]*>/si,
-      /<[^>]*data-home-team="([^"]+)"[^>]*data-away-team="([^"]+)"/i,
-      />([A-ZÆØÅ][A-ZÆØÅa-zæøå\s]{2,30})\s*[-–]\s*([A-ZÆØÅ][A-ZÆØÅa-zæøå\s]{2,30})</
-    ];
-
-    for (const pattern of patterns) {
-      const match = cleanHtml.match(pattern);
-      if (match && match[1] && match[2]) {
-        let homeTeam = cleanTeamName(match[1]);
-        let awayTeam = cleanTeamName(match[2]);
+        // Extract referees from match data
+        const referees = extractReferees(match);
         
-        if (isValidTeamName(homeTeam) && isValidTeamName(awayTeam)) {
-          console.log(`Found teams via pattern: ${homeTeam} vs ${awayTeam}`);
-          
-          return {
-            fiksId: fiksId,
-            homeTeam: homeTeam,
-            awayTeam: awayTeam,
-            tournament: extractTournamentFromHTML(cleanHtml),
-            date: new Date().toISOString(),
-            status: "unknown",
-            score: { home: 0, away: 0 },
-            halfTimeScore: { home: 0, away: 0 },
-            events: [],
-            venue: "Hjemme",
-            time: 0
-          };
-        }
-      }
-    }
-
-    return extractTeamsFromText(cleanHtml, fiksId);
-
-  } catch (error) {
-    console.error('HTML parsing error:', error);
-    return null;
-  }
-}
-
-// Rens lag-navn fra HTML-artifacts
-function cleanTeamName(name) {
-  return name
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#\d+;/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Ekstraher lag-navn fra ren tekst
-function extractTeamsFromText(html, fiksId) {
-  try {
-    const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-    
-    const foundTeams = [];
-    const clubNames = Object.keys(VERIFIED_CLUBS);
-    
-    for (const clubName of clubNames) {
-      if (text.includes(clubName)) {
-        foundTeams.push(clubName);
-      }
-    }
-    
-    if (foundTeams.length === 2) {
-      console.log(`Found teams from club list: ${foundTeams[0]} vs ${foundTeams[1]}`);
-      
-      return {
-        fiksId: fiksId,
-        homeTeam: foundTeams[0],
-        awayTeam: foundTeams[1],
-        tournament: "Hentet via tekst-matching",
-        date: new Date().toISOString(),
-        status: "unknown",
-        score: { home: 0, away: 0 },
-        halfTimeScore: { home: 0, away: 0 },
-        events: [],
-        venue: "Hjemme",
-        time: 0
-      };
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Text extraction error:', error);
-    return null;
-  }
-}
-
-// Parse fra meta tags
-function parseMatchFromMetaTags(html, fiksId) {
-  try {
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-    if (titleMatch) {
-      const title = titleMatch[1];
-      const teamMatch = title.match(/([^-]+)\s*-\s*([^-]+)/);
-      if (teamMatch) {
         return {
-          fiksId: fiksId,
-          homeTeam: teamMatch[1].trim(),
-          awayTeam: teamMatch[2].trim(),
-          tournament: "Fra meta tags",
-          date: new Date().toISOString(),
-          status: "unknown", 
-          score: { home: 0, away: 0 },
-          halfTimeScore: { home: 0, away: 0 },
-          events: [],
-          venue: "Hjemme",
-          time: 0
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({ referees })
         };
       }
     }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
 
-// Parse fra page title
-function parseMatchFromTitle(html, fiksId) {
-  return null;
-}
-
-// Valider lag-navn
-function isValidTeamName(name) {
-  if (!name || name.length < 2) return false;
-  if (name.length > 50) return false;
-  
-  const invalidPatterns = [
-    /^(div|span|h\d|p|a|ul|li|img|script|style)$/i,
-    /^\d+$/,
-    /(javascript|function|var|document|window)/i,
-    /^(null|undefined|true|false)$/i,
-    /^(data|icon|image|logo|img)$/i,
-    /https?:\/\//i,
-    /billett\.fotball\.no/i,
-    /&amp;|&lt;|&gt;/i,
-    /^[^a-zæøåA-ZÆØÅ]*$/
-  ];
-  
-  return !invalidPatterns.some(pattern => pattern.test(name));
-}
-
-// Ekstraher turnering fra HTML
-function extractTournamentFromHTML(html) {
-  const patterns = [
-    /<[^>]*class="[^"]*tournament[^"]*"[^>]*>([^<]+)<\/[^>]*>/i,
-    /<[^>]*class="[^"]*competition[^"]*"[^>]*>([^<]+)<\/[^>]*>/i,
-    /data-tournament="([^"]+)"/i,
-    /data-competition="([^"]+)"/i,
-    /Turnering[^:]*:\s*([^<\n]+)/i,
-    /Serie[^:]*:\s*([^<\n]+)/i,
-    /Divisjon[^:]*:\s*([^<\n]+)/i,
-    /<title[^>]*>[^-]+-[^-]+-([^<]+)<\/title>/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match && match[1]) {
-      const tournament = cleanTeamName(match[1]);
-      
-      if (tournament.length < 100 && !tournament.includes('http') && !tournament.includes('billett.fotball.no')) {
-        return tournament;
-      }
-    }
-  }
-  
-  return "Ukjent turnering";
-}
-
-// Parse kamphendelser
-function parseEvents(rawEvents) {
-  if (!Array.isArray(rawEvents)) return [];
-  
-  return rawEvents.map(event => {
-    let type = 'unknown';
-    
-    if (event.type) {
-      type = event.type.toLowerCase();
-    } else if (event.hendelse) {
-      const h = event.hendelse.toLowerCase();
-      if (h.includes('spillemål') || h.includes('goal')) type = 'goal';
-      else if (h.includes('selvmål')) type = 'own-goal';
-      else if (h.includes('straffemål')) type = 'penalty';
-      else if (h.includes('innbytter') || h.includes('substitution')) type = 'substitution';
-      else if (h.includes('gult') || h.includes('yellow')) type = 'yellow';
-      else if (h.includes('rødt') || h.includes('red')) type = 'red';
-    }
-
+    // If no live match, return empty referees
     return {
-      type: type,
-      player: event.player?.name || event.spiller || "Ukjent spiller",
-      team: event.team || (event.isHome ? 'home' : 'away'),
-      time: parseInt(event.time || event.minutt || 0),
-      substitute: event.substitute || null
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ 
+        referees: [],
+        message: 'Ingen aktiv kamp - ingen dommere tilgjengelig'
+      })
     };
-  }).filter(event => ['goal', 'own-goal', 'penalty', 'substitution', 'yellow', 'red'].includes(event.type));
+    
+  } catch (error) {
+    console.error('Error fetching referees:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: 'Failed to fetch referees' })
+    };
+  }
 }
 
-// Mock data for testing
-function getMockMatchData(fiksId) {
-  const mockMatches = {
-    "8698452": {
-      homeTeam: "Ekholt",
-      awayTeam: "Sprint-Jelløy", 
-      tournament: "Amedialigaen",
-      events: [
-        { type: "goal", player: "Abdullahi Mohamad Salad", team: "
+function extractReferees(match) {
+  const referees = [];
+  
+  // Check various possible referee fields in the API response
+  if (match.referee) {
+    referees.push({
+      role: 'Hoveddommer',
+      name: match.referee
+    });
+  }
+  
+  if (match.assistantReferee1) {
+    referees.push({
+      role: 'Linjedommer 1',
+      name: match.assistantReferee1
+    });
+  }
+  
+  if (match.assistantReferee2) {
+    referees.push({
+      role: 'Linjedommer 2',
+      name: match.assistantReferee2
+    });
+  }
+  
+  // Check if referees are in a nested structure
+  if (match.officials && Array.isArray(match.officials)) {
+    match.officials.forEach(official => {
+      referees.push({
+        role: official.role || 'Dommer',
+        name: official.name || official.fullName
+      });
+    });
+  }
+  
+  // Check alternative referee structure
+  if (match.referees && Array.isArray(match.referees)) {
+    match.referees.forEach(ref => {
+      referees.push({
+        role: ref.type || 'Dommer',
+        name: ref.name || ref.fullName
+      });
+    });
+  }
+  
+  return referees;
+}
+
+async function processMatchData(match, isLive) {
+  try {
+    const processed = {
+      id: match.fiksId || match.id,
+      homeTeam: {
+        name: match.homeTeam?.name || match.hjemmelag?.navn,
+        logo: match.homeTeam?.logo || match.hjemmelag?.logo,
+        score: match.homeTeam?.score || match.hjemmelag?.maal || 0
+      },
+      awayTeam: {
+        name: match.awayTeam?.name || match.bortelag?.navn,
+        logo: match.awayTeam?.logo || match.bortelag?.logo,
+        score: match.awayTeam?.score || match.bortelag?.maal || 0
+      },
+      status: match.status || match.kampstatus,
+      startTime: match.startTime || match.starttid,
+      venue: match.venue?.name || match.bane?.navn,
+      tournament: match.tournament?.name || match.turnering?.navn,
+      events: await processEvents(match.events || []),
+      isLive: isLive,
+      // Additional fields for better data handling
+      currentTime: match.currentTime || match.spilletid,
+      period: match.period || match.periode,
+      referees: extractReferees(match)
+    };
+    
+    return processed;
+    
+  } catch (error) {
+    console.error('Error processing match data:', error);
+    throw error;
+  }
+}
+
+async function processEvents(events) {
+  if (!Array.isArray(events)) return [];
+  
+  return events.map(event => {
+    const processed = {
+      id: event.id || `event_${Date.now()}_${Math.random()}`,
+      type: mapEventType(event.type || event.hendelsestype),
+      time: event.time || event.tid || event.minutt,
+      team: event.team || event.lag,
+      description: event.description || event.beskrivelse
+    };
+    
+    // Handle player information with jersey numbers
+    if (event.player || event.spiller) {
+      const player = event.player || event.spiller;
+      processed.player = {
+        name: player.name || player.navn,
+        number: player.number || player.draktnummer || event.number || event.draktnummer
+      };
+    }
+    
+    // Handle substitutions with both players
+    if (event.playerIn || event.spillerInn) {
+      const playerIn = event.playerIn || event.spillerInn;
+      processed.playerIn = {
+        name: playerIn.name || playerIn.navn,
+        number: playerIn.number || playerIn.draktnummer
+      };
+    }
+    
+    if (event.playerOut || event.spillerUt) {
+      const playerOut = event.playerOut || event.spillerUt;
+      processed.playerOut = {
+        name: playerOut.name || playerOut.navn,
+        number: playerOut.number || playerOut.draktnummer
+      };
+    }
+    
+    // Handle additional event data
+    if (event.additionalInfo) {
+      processed.additionalInfo = event.additionalInfo;
+    }
+    
+    return processed;
+  });
+}
+
+function mapEventType(apiType) {
+  const typeMap = {
+    'goal': 'goal',
+    'maal': 'goal',
+    'yellow_card': 'yellow',
+    'gult_kort': 'yellow',
+    'red_card': 'red',
+    'rodt_kort': 'red',
+    'substitution': 'substitution',
+    'innbytte': 'substitution',
+    'corner': 'corner',
+    'hjornespark': 'corner',
+    'free_kick': 'free_kick',
+    'frispark': 'free_kick',
+    'penalty': 'penalty',
+    'straffespark': 'penalty',
+    'offside': 'offside',
+    'offside': 'offside'
+  };
+  
+  return typeMap[apiType?.toLowerCase()] || apiType || 'unknown';
+}
