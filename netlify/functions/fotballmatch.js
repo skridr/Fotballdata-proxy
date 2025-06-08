@@ -485,7 +485,10 @@ function parseEvents(rawEvents) {
       type = event.type.toLowerCase();
     } else if (event.hendelse) {
       const h = event.hendelse.toLowerCase();
-      if (h.includes('mål') || h.includes('goal')) type = 'goal';
+      if (h.includes('spillemål') || h.includes('goal')) type = 'goal';
+      else if (h.includes('selvmål')) type = 'own-goal';
+      else if (h.includes('straffemål')) type = 'penalty';
+      else if (h.includes('innbytter') || h.includes('substitution')) type = 'substitution';
       else if (h.includes('gult') || h.includes('yellow')) type = 'yellow';
       else if (h.includes('rødt') || h.includes('red')) type = 'red';
     }
@@ -495,23 +498,31 @@ function parseEvents(rawEvents) {
       player: event.player?.name || event.spiller || "Ukjent spiller",
       team: event.team || (event.isHome ? 'home' : 'away'),
       time: parseInt(event.time || event.minutt || 0),
-      description: event.description || event.beskrivelse || ''
+      substitute: event.substitute || null // For innbyttere
     };
-  }).filter(event => ['goal', 'yellow', 'red'].includes(event.type));
+  }).filter(event => ['goal', 'own-goal', 'penalty', 'substitution', 'yellow', 'red'].includes(event.type));
 }
 
-// Mock data for testing
+// Mock data for testing - basert på ekte kamp FiksID 8698452: Ekholt vs Sprint-Jelløy
 function getMockMatchData(fiksId) {
   const mockMatches = {
     "8698452": {
       homeTeam: "Ekholt",
-      awayTeam: "IL Borgar",
-      tournament: "Østfold 4. divisjon",
+      awayTeam: "Sprint-Jelløy", 
+      tournament: "Amedialigaen",
       events: [
-        { type: "goal", player: "Erik Hansen", team: "home", time: 23, description: "Flott mål fra 16 meter" },
-        { type: "goal", player: "Lars Andersen", team: "away", time: 35, description: "Header etter corner" },
-        { type: "yellow", player: "Petter Olsen", team: "home", time: 52, description: "Gult kort for filming" },
-        { type: "goal", player: "Jon Bakken", team: "away", time: 67, description: "Straffemål" }
+        { type: "goal", player: "Abdullahi Mohamad Salad", team: "away", time: 5 },
+        { type: "yellow", player: "Abdullahi Mohamad Salad", team: "away", time: 19 },
+        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 29 },
+        { type: "yellow", player: "Sander Urstad Andresen", team: "away", time: 40 },
+        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 45 },
+        { type: "yellow", player: "Emil Christiansen Lia", team: "home", time: 47 },
+        { type: "goal", player: "Henrik Andreas Stokkebø", team: "home", time: 48 },
+        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 53 },
+        { type: "yellow", player: "Nimrod Andom Hasho", team: "away", time: 73 },
+        { type: "yellow", player: "Hoger Azad Islam", team: "home", time: 85 },
+        { type: "yellow", player: "Marius Morris Kjeldgaard Christensen", team: "home", time: 90 },
+        { type: "goal", player: "Jonas Urstad Andresen", team: "away", time: 90 }
       ]
     },
     "8700000": {
@@ -519,8 +530,10 @@ function getMockMatchData(fiksId) {
       awayTeam: "Sarpsborg 08", 
       tournament: "Eliteserien",
       events: [
-        { type: "goal", player: "Marcus Pedersen", team: "home", time: 15, description: "Sprikt skudd" },
-        { type: "yellow", player: "Joni Kauko", team: "away", time: 28, description: "Hard takling" }
+        { type: "goal", player: "Marcus Pedersen", team: "home", time: 15 },
+        { type: "yellow", player: "Joni Kauko", team: "away", time: 28 },
+        { type: "red", player: "Fredrik Oldrup Jensen", team: "home", time: 45 },
+        { type: "own-goal", player: "Per Kristian Bråtveit", team: "home", time: 67 }
       ]
     }
   };
@@ -532,17 +545,46 @@ function getMockMatchData(fiksId) {
     events: []
   };
 
+  // Beregn score basert på mål-hendelser (kun mål som teller)
+  const homeGoals = mockData.events?.filter(e => 
+    (e.type === 'goal' && e.team === 'home') ||
+    (e.type === 'penalty' && e.team === 'home') ||
+    (e.type === 'own-goal' && e.team === 'away')
+  ).length || 0;
+  
+  const awayGoals = mockData.events?.filter(e => 
+    (e.type === 'goal' && e.team === 'away') ||
+    (e.type === 'penalty' && e.team === 'away') ||
+    (e.type === 'own-goal' && e.team === 'home')
+  ).length || 0;
+
+  return {
+    fiksId: fiksId,
+    ...mockData,
+    date: "2025-04-05T18:15:00Z", // Ekte kampdato
+    status: "fulltime",
+    score: { home: homeGoals, away: awayGoals },
+    venue: "Ekholt Arena",
+    time: 90,
+    source: 'mock'
+  };
+} e.team === 'home' ||
+    e.type === 'own-goal' && e.team === 'away'
+  ).length || 0;
+  
+  const awayGoals = mockData.events?.filter(e => 
+    (e.type === 'goal' || e.type === 'penalty') && e.team === 'away' ||
+    e.type === 'own-goal' && e.team === 'home'
+  ).length || 0;
+
   return {
     fiksId: fiksId,
     ...mockData,
     date: new Date().toISOString(),
     status: "live",
-    score: { 
-      home: mockData.events?.filter(e => e.type === 'goal' && e.team === 'home').length || 1,
-      away: mockData.events?.filter(e => e.type === 'goal' && e.team === 'away').length || 2
-    },
+    score: { home: homeGoals, away: awayGoals },
     venue: "Hjemme",
-    time: 78,
+    time: 85,
     source: 'mock'
   };
 }
