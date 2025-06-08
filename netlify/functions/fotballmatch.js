@@ -1,6 +1,5 @@
 // Netlify Function: .netlify/functions/fotballmatch.js
 // Spesialisert for å hente kampdata via FiksID
-// Berører IKKE eksisterende fotballdata.js
 
 exports.handler = async (event, context) => {
   // CORS headers
@@ -85,7 +84,7 @@ async function handleMatchData(fiksId, headers) {
       };
     }
     
-    // Prøv forskjellige metoder for å hente kampdata (for andre FiksID)
+    // Prøv forskjellige metoder for å hente kampdata
     let matchData = await fetchFromFotballNoAPI(fiksId);
     
     if (!matchData) {
@@ -175,7 +174,6 @@ async function fetchFromFotballNoAPI(fiksId) {
 // Parse API response
 function parseMatchDataFromAPI(data, fiksId) {
   try {
-    // Håndter forskjellige API-strukturer
     const match = data.match || data.data || data;
     
     if (!match) return null;
@@ -193,6 +191,8 @@ function parseMatchDataFromAPI(data, fiksId) {
       away: parseInt(match.awayScore || match.bortemaal || 0)
     };
 
+    const halfTimeScore = calculateHalfTimeScore(events);
+
     return {
       fiksId: fiksId,
       homeTeam: homeTeam,
@@ -201,6 +201,7 @@ function parseMatchDataFromAPI(data, fiksId) {
       date: match.date || match.dato || new Date().toISOString(),
       status: match.status || match.kampstatus || "unknown",
       score: score,
+      halfTimeScore: halfTimeScore,
       events: events,
       venue: "Hjemme",
       time: parseInt(match.currentTime || match.spilletid || 0),
@@ -211,6 +212,34 @@ function parseMatchDataFromAPI(data, fiksId) {
     console.error('Error parsing API data:', error);
     return null;
   }
+}
+
+// Calculate half-time score from events
+function calculateHalfTimeScore(events) {
+  if (!events || events.length === 0) {
+    return { home: 0, away: 0 };
+  }
+  
+  const firstHalfEvents = events.filter(e => 
+    ['goal', 'penalty', 'own-goal'].includes(e.type) && e.time <= 45
+  );
+  
+  let homeHalfScore = 0;
+  let awayHalfScore = 0;
+  
+  firstHalfEvents.forEach(event => {
+    if ((event.type === 'goal' || event.type === 'penalty') && event.team === 'home') {
+      homeHalfScore++;
+    } else if ((event.type === 'goal' || event.type === 'penalty') && event.team === 'away') {
+      awayHalfScore++;
+    } else if (event.type === 'own-goal' && event.team === 'home') {
+      awayHalfScore++;
+    } else if (event.type === 'own-goal' && event.team === 'away') {
+      homeHalfScore++;
+    }
+  });
+  
+  return { home: homeHalfScore, away: awayHalfScore };
 }
 
 // Ekstraher lag-navn fra forskjellige strukturer
@@ -241,7 +270,6 @@ async function fetchFromFotballNoScraping(fiksId) {
     const html = await response.text();
     console.log(`Scraping response length: ${html.length}`);
     
-    // Flere parsing-strategier
     let matchData = parseMatchFromHTML(html, fiksId);
     
     if (!matchData) {
@@ -268,41 +296,25 @@ async function fetchFromFotballNoScraping(fiksId) {
 // Parse match fra HTML
 function parseMatchFromHTML(html, fiksId) {
   try {
-    // Først, rens HTML fra problematiske elementer
     let cleanHtml = html
       .replace(/<script[^>]*>.*?<\/script>/gsi, '')
       .replace(/<style[^>]*>.*?<\/style>/gsi, '')
       .replace(/<!--.*?-->/gs, '');
 
-    // Forbedrede patterns for fotball.no struktur
     const patterns = [
-      // Pattern 1: Kamp-tittel i h1
       /<h1[^>]*class="[^"]*"[^>]*>([^<]+)\s*[-–]\s*([^<]+)<\/h1>/i,
-      
-      // Pattern 2: Fra page title
       /<title[^>]*>([^-]+)\s*[-–]\s*([^-]+)\s*[-–]/i,
-      
-      // Pattern 3: Lag-navn i specifike klasser
       /<[^>]*class="[^"]*team[^"]*home[^"]*"[^>]*>([^<]+)<\/[^>]*>.*?<[^>]*class="[^"]*team[^"]*away[^"]*"[^>]*>([^<]+)<\/[^>]*>/si,
-      
-      // Pattern 4: Fra meta og data attributer
       /<[^>]*data-home-team="([^"]+)"[^>]*data-away-team="([^"]+)"/i,
-      
-      // Pattern 5: Fallback for enkel struktur
       />([A-ZÆØÅ][A-ZÆØÅa-zæøå\s]{2,30})\s*[-–]\s*([A-ZÆØÅ][A-ZÆØÅa-zæøå\s]{2,30})</
     ];
 
     for (const pattern of patterns) {
       const match = cleanHtml.match(pattern);
       if (match && match[1] && match[2]) {
-        let homeTeam = match[1].trim();
-        let awayTeam = match[2].trim();
+        let homeTeam = cleanTeamName(match[1]);
+        let awayTeam = cleanTeamName(match[2]);
         
-        // Rens lag-navn
-        homeTeam = cleanTeamName(homeTeam);
-        awayTeam = cleanTeamName(awayTeam);
-        
-        // Valider at dette ser ut som lag-navn
         if (isValidTeamName(homeTeam) && isValidTeamName(awayTeam)) {
           console.log(`Found teams via pattern: ${homeTeam} vs ${awayTeam}`);
           
@@ -314,6 +326,7 @@ function parseMatchFromHTML(html, fiksId) {
             date: new Date().toISOString(),
             status: "unknown",
             score: { home: 0, away: 0 },
+            halfTimeScore: { home: 0, away: 0 },
             events: [],
             venue: "Hjemme",
             time: 0
@@ -322,7 +335,6 @@ function parseMatchFromHTML(html, fiksId) {
       }
     }
 
-    // Hvis ingen patterns matcher, prøv å finn lag-navn i tekst
     return extractTeamsFromText(cleanHtml, fiksId);
 
   } catch (error) {
@@ -346,10 +358,8 @@ function cleanTeamName(name) {
 // Ekstraher lag-navn fra ren tekst
 function extractTeamsFromText(html, fiksId) {
   try {
-    // Fjern alle HTML tags og få ren tekst
     const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
     
-    // Søk etter kjente klubbnavn fra VERIFIED_CLUBS
     const foundTeams = [];
     const clubNames = Object.keys(VERIFIED_CLUBS);
     
@@ -359,7 +369,6 @@ function extractTeamsFromText(html, fiksId) {
       }
     }
     
-    // Hvis vi fant nøyaktig 2 lag, bruk dem
     if (foundTeams.length === 2) {
       console.log(`Found teams from club list: ${foundTeams[0]} vs ${foundTeams[1]}`);
       
@@ -371,6 +380,7 @@ function extractTeamsFromText(html, fiksId) {
         date: new Date().toISOString(),
         status: "unknown",
         score: { home: 0, away: 0 },
+        halfTimeScore: { home: 0, away: 0 },
         events: [],
         venue: "Hjemme",
         time: 0
@@ -400,6 +410,7 @@ function parseMatchFromMetaTags(html, fiksId) {
           date: new Date().toISOString(),
           status: "unknown", 
           score: { home: 0, away: 0 },
+          halfTimeScore: { home: 0, away: 0 },
           events: [],
           venue: "Hjemme",
           time: 0
@@ -414,7 +425,6 @@ function parseMatchFromMetaTags(html, fiksId) {
 
 // Parse fra page title
 function parseMatchFromTitle(html, fiksId) {
-  // Siste fallback - ekstraher fra URL eller andre hints
   return null;
 }
 
@@ -423,7 +433,6 @@ function isValidTeamName(name) {
   if (!name || name.length < 2) return false;
   if (name.length > 50) return false;
   
-  // Ikke godta vanlige HTML-elementer, URIer eller metadata
   const invalidPatterns = [
     /^(div|span|h\d|p|a|ul|li|img|script|style)$/i,
     /^\d+$/,
@@ -433,29 +442,22 @@ function isValidTeamName(name) {
     /https?:\/\//i,
     /billett\.fotball\.no/i,
     /&amp;|&lt;|&gt;/i,
-    /^[^a-zæøåA-ZÆØÅ]*$/  // Må inneholde minst én bokstav
+    /^[^a-zæøåA-ZÆØÅ]*$/
   ];
   
   return !invalidPatterns.some(pattern => pattern.test(name));
 }
 
-// Ekstraher turnering fra HTML (forbedret)
+// Ekstraher turnering fra HTML
 function extractTournamentFromHTML(html) {
   const patterns = [
-    // Pattern 1: Turnering i specifike klasser
     /<[^>]*class="[^"]*tournament[^"]*"[^>]*>([^<]+)<\/[^>]*>/i,
     /<[^>]*class="[^"]*competition[^"]*"[^>]*>([^<]+)<\/[^>]*>/i,
-    
-    // Pattern 2: Fra data-attributer
     /data-tournament="([^"]+)"/i,
     /data-competition="([^"]+)"/i,
-    
-    // Pattern 3: Tekst-patterns
     /Turnering[^:]*:\s*([^<\n]+)/i,
     /Serie[^:]*:\s*([^<\n]+)/i,
     /Divisjon[^:]*:\s*([^<\n]+)/i,
-    
-    // Pattern 4: Fra title eller meta
     /<title[^>]*>[^-]+-[^-]+-([^<]+)<\/title>/i
   ];
   
@@ -464,7 +466,6 @@ function extractTournamentFromHTML(html) {
     if (match && match[1]) {
       const tournament = cleanTeamName(match[1]);
       
-      // Valider at dette ikke er en URL eller ugyldig data
       if (tournament.length < 100 && !tournament.includes('http') && !tournament.includes('billett.fotball.no')) {
         return tournament;
       }
@@ -498,12 +499,12 @@ function parseEvents(rawEvents) {
       player: event.player?.name || event.spiller || "Ukjent spiller",
       team: event.team || (event.isHome ? 'home' : 'away'),
       time: parseInt(event.time || event.minutt || 0),
-      substitute: event.substitute || null // For innbyttere
+      substitute: event.substitute || null
     };
   }).filter(event => ['goal', 'own-goal', 'penalty', 'substitution', 'yellow', 'red'].includes(event.type));
 }
 
-// Mock data for testing - basert på ekte kamp FiksID 8698452: Ekholt vs Sprint-Jelløy
+// Mock data for testing
 function getMockMatchData(fiksId) {
   const mockMatches = {
     "8698452": {
@@ -511,124 +512,4 @@ function getMockMatchData(fiksId) {
       awayTeam: "Sprint-Jelløy", 
       tournament: "Amedialigaen",
       events: [
-        { type: "goal", player: "Abdullahi Mohamad Salad", team: "away", time: 5 },
-        { type: "yellow", player: "Abdullahi Mohamad Salad", team: "away", time: 19 },
-        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 29 },
-        { type: "yellow", player: "Sander Urstad Andresen", team: "away", time: 40 },
-        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 45 },
-        { type: "yellow", player: "Emil Christiansen Lia", team: "home", time: 47 },
-        { type: "goal", player: "Henrik Andreas Stokkebø", team: "home", time: 48 },
-        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 53 }
-        // Kampen pågår fortsatt (67'), resten av hendelsene kommer senere
-      ]
-    },
-    "8700000": {
-      homeTeam: "Fredrikstad FK",
-      awayTeam: "Sarpsborg 08", 
-      tournament: "Eliteserien",
-      events: [
-        { type: "goal", player: "Marcus Pedersen", team: "home", time: 15 },
-        { type: "yellow", player: "Joni Kauko", team: "away", time: 28 },
-        { type: "red", player: "Fredrik Oldrup Jensen", team: "home", time: 45 },
-        { type: "own-goal", player: "Per Kristian Bråtveit", team: "home", time: 67 }
-      ]
-    }
-  };
-
-  const mockData = mockMatches[fiksId] || {
-    homeTeam: "Hjemmelag Test",
-    awayTeam: "Bortelag Test", 
-    tournament: "Test-turnering",
-    events: []
-  };
-
-  // Beregn score basert på mål-hendelser (kun mål som teller)
-  const homeGoals = mockData.events?.filter(e => 
-    (e.type === 'goal' && e.team === 'home') ||
-    (e.type === 'penalty' && e.team === 'home') ||
-    (e.type === 'own-goal' && e.team === 'away')
-  ).length || 0;
-  
-  const awayGoals = mockData.events?.filter(e => 
-    (e.type === 'goal' && e.team === 'away') ||
-    (e.type === 'penalty' && e.team === 'away') ||
-    (e.type === 'own-goal' && e.team === 'home')
-  ).length || 0;
-
-  return {
-    fiksId: fiksId,
-    ...mockData,
-    date: new Date().toISOString(), // Sett til nå for live demo
-    status: "live", // Gjør kampen live for testing
-    score: { home: homeGoals, away: awayGoals },
-    venue: "Ekholt Arena",
-    time: 67, // Simuler at kampen pågår
-    source: 'mock'
-  };
-} e.team === 'home' ||
-    e.type === 'own-goal' && e.team === 'away'
-  ).length || 0;
-  
-  const awayGoals = mockData.events?.filter(e => 
-    (e.type === 'goal' || e.type === 'penalty') && e.team === 'away' ||
-    e.type === 'own-goal' && e.team === 'home'
-  ).length || 0;
-
-  return {
-    fiksId: fiksId,
-    ...mockData,
-    date: new Date().toISOString(),
-    status: "live",
-    score: { home: homeGoals, away: awayGoals },
-    venue: "Hjemme",
-    time: 85,
-    source: 'mock'
-  };
-}
-
-// Legg til VERIFIED_CLUBS konstant for team matching
-const VERIFIED_CLUBS = {
-  "Aremark": 46, "Askim": 53, "Badebyen Drøbak": 3250, "Begby": 33, "Berg": 2, "Borgen": 12,
-  "Degernes": 60, "Driv": 127, "Drøbak-Frogn": 80, "Eidsberg": 54, "Eika Krapfoss": 1624,
-  "Ekholt": 64, "FK Sparta Sarpsborg": 10, "Sparta Sarpsborg": 10, "Sparta": 10,
-  "Fotballklubben Mellløs": 3242, "Fredrikshald Prishtina": 3191, "Fredrikstad": 27,
-  "Fredrikstad FK": 27, "FFK": 27, "Gresvik": 42, "Greåker": 19, "Hafslund": 20,
-  "Hobøl": 69, "HSV": 3085, "Hvaler": 44, "Hærland": 55, "Hølen": 70, "Idd": 1,
-  "IL Borgar": 34, "Borgar": 34, "Indre Østfold": 3170, "Ise": 13, "Kambo": 5,
-  "Kongsten": 28, "Korsgård": 3281, "Kråkerøy": 40, "Kvik Halden": 3, "Lande": 21,
-  "Larkollen": 65, "Lervik": 43, "Lisleby": 29, "Moss": 6, "Mysen": 56, "Möllebyen": 3336,
-  "Navestad": 14, "NMBUI": 78, "Nordby": 77, "Nylende": 38, "Oshaug": 61, "Rakkestad": 62,
-  "Rapid Athene": 7, "Rolvsøy": 39, "Rygge": 66, "Råde": 63, "Saltnes": 3156,
-  "Sarpsborg 08": 1793, "Sarpsborg": 1793, "Sarpsborg FK": 9, "Selbak": 35, "Skiptvet": 59,
-  "Skjeberg": 16, "Skogstrand": 30, "Slitu": 57, "SK Halden": 3327, "Sprint-Jeløy": 8,
-  "Spydeberg": 50, "Tempo Moss": 1704, "Tistedalen": 4, "Torp": 36, "Torsnes": 37,
-  "Trolldalen": 41, "Trosvik": 31, "Trøgstad Båstad": 1738, "Trømborg": 58, "Tune": 22,
-  "Tveter": 17, "Ullerøy": 18, "Vang": 1684, "Vansjø": 68, "Varteig": 11, "Veum": 3308,
-  "Yven": 23, "Øreåsen": 67, "Ørje": 48, "Østsiden": 32, "Ås": 79, "Ås IL": 1864
-};
-
-// Handler for live kamphendelser
-async function handleMatchEvents(fiksId, headers) {
-  // Implementer senere for real-time events
-  return {
-    statusCode: 200,
-    headers,
-    body: JSON.stringify({
-      events: [],
-      message: "Live events not implemented yet"
-    })
-  };
-}
-
-// Handler for live kamp-status
-async function handleLiveMatch(fiksId, headers) {
-  // Implementer senere for live status
-  return {
-    statusCode: 200,
-    headers,
-    body: JSON.stringify({
-      isLive: false,
-      message: "Live status not implemented yet"
-    })
-  };
-}
+        { type: "goal", player: "Abdullahi Mohamad Salad", team: "
