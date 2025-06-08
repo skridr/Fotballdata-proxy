@@ -518,11 +518,8 @@ function getMockMatchData(fiksId) {
         { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 45 },
         { type: "yellow", player: "Emil Christiansen Lia", team: "home", time: 47 },
         { type: "goal", player: "Henrik Andreas Stokkebø", team: "home", time: 48 },
-        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 53 },
-        { type: "yellow", player: "Nimrod Andom Hasho", team: "away", time: 73 },
-        { type: "yellow", player: "Hoger Azad Islam", team: "home", time: 85 },
-        { type: "yellow", player: "Marius Morris Kjeldgaard Christensen", team: "home", time: 90 },
-        { type: "goal", player: "Jonas Urstad Andresen", team: "away", time: 90 }
+        { type: "goal", player: "Halvor Langvik Mathisen", team: "home", time: 53 }
+        // Kampen pågår fortsatt (67'), resten av hendelsene kommer senere
       ]
     },
     "8700000": {
@@ -561,11 +558,11 @@ function getMockMatchData(fiksId) {
   return {
     fiksId: fiksId,
     ...mockData,
-    date: "2025-04-05T18:15:00Z", // Ekte kampdato
-    status: "fulltime",
+    date: new Date().toISOString(), // Sett til nå for live demo
+    status: "live", // Gjør kampen live for testing
     score: { home: homeGoals, away: awayGoals },
     venue: "Ekholt Arena",
-    time: 90,
+    time: 67, // Simuler at kampen pågår
     source: 'mock'
   };
 } e.team === 'home' ||
